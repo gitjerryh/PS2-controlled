@@ -1,0 +1,130 @@
+#include <PS2X_lib.h>
+
+// ==========================================
+// 1. 引脚定义
+// ==========================================
+// PS2 手柄引脚
+#define PS2_DAT 16
+#define PS2_CMD 17
+#define PS2_SEL 5
+#define PS2_CLK 18
+
+// 电机 1 (实际为您小车的右侧履带)
+#define M1_PWM 32
+#define M1_DIR 33
+#define M1_EN  25
+
+// 电机 2 (实际为您小车的左侧履带)
+#define M2_PWM 26
+#define M2_DIR 27
+#define M2_EN  14
+
+// ==========================================
+// 2. 运行参数配置
+// ==========================================
+const int PWM_FREQ = 1000;  // PWM 频率 1000Hz
+const int PWM_RES  = 8;     // 8位分辨率 (输出 0-255)
+const int M1_PWM_CH = 0;    // ESP32 PWM 通道 0
+const int M2_PWM_CH = 1;    // ESP32 PWM 通道 1
+
+// 定义小车运行的速度 (范围: 0 到 255)
+const int DEFAULT_SPEED = 200; 
+
+PS2X ps2x; // 实例化 PS2 控制器类
+int error = 0;
+
+void setup() {
+  Serial.begin(115200);
+
+  // --- 初始化电机控制引脚 ---
+  pinMode(M1_DIR, OUTPUT);
+  pinMode(M1_EN,  OUTPUT);
+  pinMode(M2_DIR, OUTPUT);
+  pinMode(M2_EN,  OUTPUT);
+
+  // 初始状态设为停止 (驱动板逻辑：EN=1 为停止)
+  digitalWrite(M1_EN, HIGH);
+  digitalWrite(M2_EN, HIGH);
+
+  // --- 配置 ESP32 PWM ---
+  ledcSetup(M1_PWM_CH, PWM_FREQ, PWM_RES);
+  ledcAttachPin(M1_PWM, M1_PWM_CH);
+  
+  ledcSetup(M2_PWM_CH, PWM_FREQ, PWM_RES);
+  ledcAttachPin(M2_PWM, M2_PWM_CH);
+
+  // --- 初始化 PS2 手柄 ---
+  delay(1000); // 留出时间让无线模块上电
+  error = ps2x.config_gamepad(PS2_CLK, PS2_CMD, PS2_SEL, PS2_DAT, false, false);
+  
+  if (error == 0) {
+    Serial.println("PS2 手柄连接成功！使用右侧按键(🔺❌🟥⭕)控制小车。");
+  } else {
+    Serial.println("PS2 手柄连接失败，请检查接线！");
+  }
+}
+
+// ==========================================
+// 3. 单个电机基础控制函数
+// ==========================================
+void controlSingleMotor(int motor, int speed, bool forward) {
+  int pwmChannel = (motor == 1) ? M1_PWM_CH : M2_PWM_CH;
+  int dirPin     = (motor == 1) ? M1_DIR    : M2_DIR;
+  int enPin      = (motor == 1) ? M1_EN     : M2_EN;
+
+  if (speed == 0) {
+    digitalWrite(enPin, HIGH); // EN=1 停止
+    ledcWrite(pwmChannel, 0);  // 速度归零
+  } else {
+    digitalWrite(enPin, LOW);  // EN=0 使能
+    // 根据传入的 forward 状态设置方向
+    digitalWrite(dirPin, forward ? LOW : HIGH); 
+    ledcWrite(pwmChannel, speed); // 输出速度PWM
+  }
+}
+
+// ==========================================
+// 4. 主循环：读取右侧按键并控制小车
+// ==========================================
+void loop() {
+  if (error != 0) return; // 未连接手柄则跳过
+
+  ps2x.read_gamepad(false, 0); // 读取手柄最新数据
+
+  // --- 已根据实测情况重新映射按键逻辑 ---
+  if (ps2x.Button(PSB_TRIANGLE)) {
+    // 🔺 按下三角键 (上)：前进
+    // 对应实测中的"手柄左"状态
+    controlSingleMotor(1, DEFAULT_SPEED, false);
+    controlSingleMotor(2, DEFAULT_SPEED, true);
+    Serial.println("前进 (三角)");
+    
+  } else if (ps2x.Button(PSB_CROSS)) {
+    // ❌ 按下叉键(X) (下)：后退
+    // 对应实测中的"手柄右"状态
+    controlSingleMotor(1, DEFAULT_SPEED, true);
+    controlSingleMotor(2, DEFAULT_SPEED, false);
+    Serial.println("后退 (叉键)");
+    
+  } else if (ps2x.Button(PSB_SQUARE)) {
+    // 🟥 按下方块键 (左)：原地左转 
+    // 对应实测中的"手柄下"状态
+    controlSingleMotor(1, DEFAULT_SPEED, false);
+    controlSingleMotor(2, DEFAULT_SPEED, false);
+    Serial.println("左转 (方块)");
+    
+  } else if (ps2x.Button(PSB_CIRCLE)) {
+    // ⭕ 按下圆圈键 (右)：原地右转 
+    // 对应实测中的"手柄上"状态
+    controlSingleMotor(1, DEFAULT_SPEED, true);
+    controlSingleMotor(2, DEFAULT_SPEED, true);
+    Serial.println("右转 (圆圈)");
+    
+  } else {
+    // 🛑 没有按下任何方向键：停止
+    controlSingleMotor(1, 0, true);
+    controlSingleMotor(2, 0, true);
+  }
+
+  delay(50); // 避免读取过快，保持50ms刷新率
+}
